@@ -1,0 +1,8 @@
+*.ipynb
+Train
+__pycache__
+wandb
+inference.csv
+kaggle.json
+*.zip
+noise_files
