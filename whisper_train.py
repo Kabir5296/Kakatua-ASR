@@ -39,11 +39,10 @@ class CONFIG:
     train_csv='ben10/ben10/train.csv'
     sample_rate=16000
     noisefiles = glob('audio/audio/*.wav') + glob('audio/audio/*/*.wav')
-    per_device_train_batch_size=12
-    per_device_eval_batch_size=12
-    per_device_test_batch_size=12
+    per_device_train_batch_size=24
+    per_device_eval_batch_size=24
     gradient_accumulation_steps=1
-    learning_rate=1e-6
+    learning_rate=1e-4
     warmup_steps=500
     save_steps=1 if debug else 1000
     eval_steps=1 if debug else 250
@@ -91,10 +90,11 @@ valid_df = valid_df.reset_index(drop=True)
 feature_extractor = WhisperFeatureExtractor.from_pretrained(CONFIG.base_model)
 if CONFIG.base_model.endswith('small') or CONFIG.base_model.endswith('tiny'):
     tokenizer = WhisperTokenizer.from_pretrained(pretrained_model_name_or_path='tugstugi', 
-                                                 task='transcribe')
+                                                 task='transcribe',
+                                                 language = 'bn')
     print(f'Tokenizer loaded from TUGSTUGI for training "{CONFIG.base_model}"')
-    
-tokenizer = WhisperTokenizer.from_pretrained(CONFIG.base_model, language="bn", task="transcribe")
+else:
+    tokenizer = WhisperTokenizer.from_pretrained(CONFIG.base_model, language="bn", task="transcribe")
 processor = WhisperProcessor.from_pretrained(CONFIG.base_model,  language="bn", task="transcribe")
 
 try:
@@ -179,12 +179,12 @@ if CONFIG.do_train:
         model = WhisperForConditionalGeneration.from_pretrained(CONFIG.base_model).to(CONFIG.device)
     else:
         model = WhisperForConditionalGeneration.from_pretrained(CONFIG.checkpoint_model,local_files_only=True).to(CONFIG.device)
-
+    model.generation_config.language = "bn" 
 
     total_param = sum(p.numel() for p in model.parameters())
     trainable_param = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print('\n'+f"total_param = {total_param/1000000}")
-    print(f"trainable = {trainable_param/1000000}")
+    print('\n'+f"total_param = {total_param/1000000} M")
+    print(f"trainable = {trainable_param/1000000} M")
     print('\n'+'='*70)
 
     from transformers import Seq2SeqTrainer
@@ -202,7 +202,9 @@ if CONFIG.do_train:
     )
     
     if not CONFIG.run_checkpoint:
-        print(f'Starting training with train dataset of length: {train_dataset.__len__} and valid dataset of length: {valid_dataset.__len__}')
+        print('\n' + f'Starting training with train dataset of length: {train_dataset.__len__()}')
+        print(f'And valid dataset of length: {valid_dataset.__len__()}')
+        print('\n' + '='*70)
     else:
         print(f'Training resuming from {CONFIG.checkpoint_model}')
         

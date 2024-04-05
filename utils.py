@@ -33,6 +33,7 @@ def get_latest_checkpoint(model_folder):
 
 train_root_dir = 'ben10/ben10/16_kHz_train_audio'
 valid_root_dir = 'ben10/ben10/16_kHz_valid_audio'
+max_input_length = 30*16000
 
 def get_path(name):
     if name.startswith('train'):
@@ -58,13 +59,11 @@ class SprintDataset(Dataset):
         idx %= len(self.df)
         audio_path = self.paths[idx]
         sentence = self.sentences[idx]
-        waves = [
-            torch.from_numpy(self.feature_extractor(self.ac.getAudio(get_path(audio_path))[0], sampling_rate=16000).input_features[0])
-            ]
+        waves = [torch.from_numpy(self.feature_extractor(self.ac.getAudio(get_path(audio_path))[0], sampling_rate=16000, max_length=max_input_length).input_features[0])]
         input_values = torch.cat(waves, axis = 0) #[0]
 
         input_length = len(input_values)
-        labels = self.processor.tokenizer(normalizer.unicode_normalize(sentence)).input_ids
+        labels = self.processor.tokenizer(normalizer.unicode_normalize(sentence), max_length=448).input_ids
         return {
             'input_features':input_values,
             'input_length':input_length,
