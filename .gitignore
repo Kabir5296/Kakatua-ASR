@@ -1,8 +1,9 @@
 *.ipynb
-Train
 __pycache__
-wandb
-inference.csv
-kaggle.json
 *.zip
-noise_files
+ben10
+Train
+venv
+wandb
+audio
+tugstugi

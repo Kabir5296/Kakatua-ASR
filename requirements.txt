@@ -1,0 +1,15 @@
+transformers
+numpy
+pandas
+pyarrow
+torchaudio
+evaluate
+scikit-learn
+banglanlptoolkit
+bnunicodenormalizer
+langdetect
+git+https://github.com/csebuetnlp/normalizer
+sentencepiece
+wandb
+accelerate
+jiwer

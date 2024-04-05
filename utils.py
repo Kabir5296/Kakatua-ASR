@@ -21,6 +21,9 @@ from transformers import Trainer, Seq2SeqTrainingArguments
 # from transformers import Wav2Vec2CTCTokenizer, Wav2Vec2FeatureExtractor, Wav2Vec2Processor, Wav2Vec2ForCTC
 from transformers import WhisperFeatureExtractor, WhisperTokenizer, WhisperProcessor, WhisperForConditionalGeneration
 
+from banglanlptoolkit import BnNLPNormalizer
+normalizer = BnNLPNormalizer()
+
 def get_latest_checkpoint(model_folder):
     number = []
     for all in os.listdir(model_folder):
@@ -28,14 +31,20 @@ def get_latest_checkpoint(model_folder):
             number.append(all.split('-')[-1])
     return f'checkpoint-{max(number)}'
 
-def remove_punctuation(text):
-    punctuation_pattern = re.compile(r'[^\w\s]')
-    return punctuation_pattern.sub('', text)
+train_root_dir = 'ben10/ben10/16_kHz_train_audio'
+valid_root_dir = 'ben10/ben10/16_kHz_valid_audio'
+
+def get_path(name):
+    if name.startswith('train'):
+        return os.path.join(train_root_dir, name)
+    elif name.startswith('valid'):
+        return os.path.joint(valid_root_dir, name)
+
 class SprintDataset(Dataset):
     def __init__(self, df, processor, audioConverter, feature_extractor, loopDataset=1):
         self.df = df
-        self.paths = df['path']
-        self.sentences = df['sentence']
+        self.paths = df['file_name']
+        self.sentences = df['transcripts']
         self.len = len(self.df) * loopDataset
 
         self.processor = processor
@@ -47,30 +56,20 @@ class SprintDataset(Dataset):
 
     def loadSample(self, idx):
         idx %= len(self.df)
-        audio_paths = self.paths[idx]
+        audio_path = self.paths[idx]
         sentence = self.sentences[idx]
-        if not audio_paths.startswith("["): 
-            audio_paths = [audio_paths]
-        else:
-            audio_paths = eval(audio_paths)
-        waves = [torch.from_numpy(self.feature_extractor(self.ac.getAudio(audio_path)[0], sampling_rate=16000).input_features[0]) for audio_path in audio_paths]
+        waves = [
+            torch.from_numpy(self.feature_extractor(self.ac.getAudio(get_path(audio_path))[0], sampling_rate=16000).input_features[0])
+            ]
         input_values = torch.cat(waves, axis = 0) #[0]
-        # print(len(input_values))
 
         input_length = len(input_values)
-        # with self.processor.as_target_processor():
-        labels = self.processor.tokenizer(remove_punctuation(sentence)).input_ids
-        # print(processor.decode(labels))
+        labels = self.processor.tokenizer(normalizer.unicode_normalize(sentence)).input_ids
         return {
             'input_features':input_values,
             'input_length':input_length,
             'labels':labels
         }
-
-    def __getitem__(self, idx): 
-        if idx >= self.len:
-            raise IndexError('index out of range')
-        return self.loadSample(idx)
 
     def __getitem__(self, idx): 
         if idx >= self.len:
