@@ -14,10 +14,18 @@ from transformers import Trainer, Seq2SeqTrainingArguments, pipeline
 from transformers.utils import is_flash_attn_2_available
 from sklearn.model_selection import train_test_split
 # from transformers import Wav2Vec2CTCTokenizer, Wav2Vec2FeatureExtractor, Wav2Vec2Processor, Wav2Vec2ForCTC
-from transformers import WhisperFeatureExtractor, WhisperTokenizer, WhisperProcessor, WhisperForConditionalGeneration, EarlyStoppingCallback
+from transformers import WhisperFeatureExtractor, BitsAndBytesConfig, WhisperTokenizer, WhisperProcessor, WhisperForConditionalGeneration, EarlyStoppingCallback
 from audio_converter import AudioConverter
 from utils import SprintDataset, DataCollatorSpeechSeq2SeqWithPadding, normalizeUnicode, normalizeUnicodextra, get_latest_checkpoint
-
+from peft import (
+    prepare_model_for_kbit_training,
+    LoraConfig, 
+    PeftModel, 
+    LoraModel, 
+    LoraConfig, 
+    get_peft_model,
+    PeftConfig
+)
 from tqdm import tqdm
 tqdm.pandas()
 
@@ -26,23 +34,23 @@ warnings.filterwarnings("ignore")
 
 class CONFIG:
     debug=False
-    do_test = True
+    do_aug = False
     do_train = True
-    run_checkpoint=False
+    run_checkpoint=True
     wandb_log = True
     do_noise = False
-    patience = 5
+    patience = 25
     device = 'cuda'
-    base_model = "openai/whisper-tiny"
+    base_model = 'tugstugi' #"openai/whisper-tiny"
     output_dir = 'Train/NoiseDataIntroducedTraining'
     checkpoint_model = os.path.join(output_dir, get_latest_checkpoint(output_dir)) if run_checkpoint else None
-    train_csv='ben10/ben10/train.csv'
+    train_csv= 'clean_data.csv' #'ben10/ben10/train.csv'
     sample_rate=16000
     noisefiles = glob('audio/audio/*.wav') + glob('audio/audio/*/*.wav')
     per_device_train_batch_size=24
     per_device_eval_batch_size=24
     gradient_accumulation_steps=1
-    learning_rate=1e-4
+    learning_rate=1e-5
     warmup_steps=500
     save_steps=1 if debug else 1000
     eval_steps=1 if debug else 250
@@ -174,19 +182,35 @@ if CONFIG.do_train:
         lr_scheduler_type='cosine',
         save_total_limit=CONFIG.save_limit,
     )
+    
+    quant_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_compute_dtype=torch.bfloat16,
+    )
 
     if not CONFIG.run_checkpoint:
-        model = WhisperForConditionalGeneration.from_pretrained(CONFIG.base_model).to(CONFIG.device)
+        model = WhisperForConditionalGeneration.from_pretrained(CONFIG.base_model, quantization_config=quant_config).to(CONFIG.device)
     else:
-        model = WhisperForConditionalGeneration.from_pretrained(CONFIG.checkpoint_model,local_files_only=True).to(CONFIG.device)
+        model = WhisperForConditionalGeneration.from_pretrained(CONFIG.checkpoint_model, quantization_config=quant_config,local_files_only=True).to(CONFIG.device)
+    
+    model = prepare_model_for_kbit_training(model)
     model.generation_config.language = "bn" 
+    model.generation_config.forced_decoder_ids = None
+    model.config.suppress_tokens = []
 
-    total_param = sum(p.numel() for p in model.parameters())
-    trainable_param = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print('\n'+f"total_param = {total_param/1000000} M")
-    print(f"trainable = {trainable_param/1000000} M")
-    print('\n'+'='*70)
+    """
+        whisper uses CNNs in the encoder
+        LoRA freezes all layers, but let's make the first layer (receiving layer) trainable.
+    """
+    def make_inputs_require_grad(module, input, output):
+        output.requires_grad_(True)
 
+    model.model.encoder.conv1.register_forward_hook(make_inputs_require_grad)
+    lora_config = LoraConfig(r=32, lora_alpha=64, target_modules=["q_proj", "v_proj"], lora_dropout=0.05, bias="none", )
+    model = get_peft_model(model, lora_config)
+    model.print_trainable_parameters()
     from transformers import Seq2SeqTrainer
 
     trainer = Seq2SeqTrainer(
@@ -214,4 +238,6 @@ if CONFIG.do_train:
 
     model.save_pretrained(CONFIG.output_dir)
     tokenizer.save_pretrained(CONFIG.output_dir)
-    trainer.save_pretrained(CONFIG.output_dir)
+    out_logs = pd.DataFrame(trainer.state.log_history)
+    out_logs.to_csv("logs.csv")
+    # trainer.save_pretrained(CONFIG.output_dir)
