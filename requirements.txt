@@ -13,3 +13,8 @@ sentencepiece
 wandb
 accelerate
 jiwer
+bitsandbytes
+git+https://github.com/huggingface/peft.git@main
+torchmetrics
+librosa
+matplotlib

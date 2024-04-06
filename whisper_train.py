@@ -41,14 +41,14 @@ class CONFIG:
     do_noise = False
     patience = 25
     device = 'cuda'
-    base_model = 'tugstugi' #"openai/whisper-tiny"
+    base_model = 'openai/whisper-large-v2' #'tugstugi' #"openai/whisper-tiny"
     output_dir = 'Train/NoiseDataIntroducedTraining'
     checkpoint_model = os.path.join(output_dir, get_latest_checkpoint(output_dir)) if run_checkpoint else None
     train_csv= 'clean_data.csv' #'ben10/ben10/train.csv'
     sample_rate=16000
     noisefiles = glob('audio/audio/*.wav') + glob('audio/audio/*/*.wav')
-    per_device_train_batch_size=24
-    per_device_eval_batch_size=24
+    per_device_train_batch_size=8
+    per_device_eval_batch_size=8
     gradient_accumulation_steps=1
     learning_rate=1e-5
     warmup_steps=500
@@ -159,7 +159,37 @@ def compute_metrics_whisper(pred):
     print(f"At this evaluation, WER is: {wer} and CER is: {cer}")
     return {"wer": wer, "cer": cer}
 
-if CONFIG.do_train:
+if CONFIG.do_train:    
+    quant_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_compute_dtype=torch.bfloat16,
+    )
+
+    if not CONFIG.run_checkpoint:
+        model = WhisperForConditionalGeneration.from_pretrained(CONFIG.base_model, quantization_config=quant_config, device_map="auto")
+    else:
+        model = WhisperForConditionalGeneration.from_pretrained(CONFIG.checkpoint_model, quantization_config=quant_config,local_files_only=True, device_map="auto")
+    
+    model = prepare_model_for_kbit_training(model)
+    model.generation_config.language = "bn" 
+    model.generation_config.forced_decoder_ids = None
+    model.config.suppress_tokens = []
+
+    """
+        whisper uses CNNs in the encoder
+        LoRA freezes all layers, but let's make the first layer (receiving layer) trainable.
+    """
+    def make_inputs_require_grad(module, input, output):
+        output.requires_grad_(True)
+
+    model.model.encoder.conv1.register_forward_hook(make_inputs_require_grad)
+    lora_config = LoraConfig(r=32, lora_alpha=64, target_modules=["q_proj", "v_proj"], lora_dropout=0.05, bias="none", )
+    model = get_peft_model(model, lora_config)
+    model.print_trainable_parameters()
+    from transformers import Seq2SeqTrainer
+
     training_args = Seq2SeqTrainingArguments(
         output_dir=CONFIG.output_dir,  # change to a repo name of your choice
         per_device_train_batch_size=CONFIG.per_device_train_batch_size,
@@ -181,37 +211,9 @@ if CONFIG.do_train:
         metric_for_best_model="wer",
         lr_scheduler_type='cosine',
         save_total_limit=CONFIG.save_limit,
+        optim = "paged_adamw_8bit",
+        remove_unused_columns=False,
     )
-    
-    quant_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_compute_dtype=torch.bfloat16,
-    )
-
-    if not CONFIG.run_checkpoint:
-        model = WhisperForConditionalGeneration.from_pretrained(CONFIG.base_model, quantization_config=quant_config).to(CONFIG.device)
-    else:
-        model = WhisperForConditionalGeneration.from_pretrained(CONFIG.checkpoint_model, quantization_config=quant_config,local_files_only=True).to(CONFIG.device)
-    
-    model = prepare_model_for_kbit_training(model)
-    model.generation_config.language = "bn" 
-    model.generation_config.forced_decoder_ids = None
-    model.config.suppress_tokens = []
-
-    """
-        whisper uses CNNs in the encoder
-        LoRA freezes all layers, but let's make the first layer (receiving layer) trainable.
-    """
-    def make_inputs_require_grad(module, input, output):
-        output.requires_grad_(True)
-
-    model.model.encoder.conv1.register_forward_hook(make_inputs_require_grad)
-    lora_config = LoraConfig(r=32, lora_alpha=64, target_modules=["q_proj", "v_proj"], lora_dropout=0.05, bias="none", )
-    model = get_peft_model(model, lora_config)
-    model.print_trainable_parameters()
-    from transformers import Seq2SeqTrainer
 
     trainer = Seq2SeqTrainer(
         args=training_args,
@@ -220,7 +222,7 @@ if CONFIG.do_train:
         eval_dataset=valid_dataset,
         data_collator=data_collator,
         compute_metrics=compute_metrics_whisper,
-        tokenizer=tokenizer,
+        tokenizer=processor.feature_extractor,
         callbacks = [EarlyStoppingCallback(early_stopping_patience=CONFIG.patience)],
         
     )
