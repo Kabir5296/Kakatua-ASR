@@ -14,7 +14,18 @@ from transformers import Trainer, Seq2SeqTrainingArguments, pipeline
 from transformers.utils import is_flash_attn_2_available
 from sklearn.model_selection import train_test_split
 # from transformers import Wav2Vec2CTCTokenizer, Wav2Vec2FeatureExtractor, Wav2Vec2Processor, Wav2Vec2ForCTC
-from transformers import WhisperFeatureExtractor, BitsAndBytesConfig, WhisperTokenizer, WhisperProcessor, WhisperForConditionalGeneration, EarlyStoppingCallback
+from transformers import (
+    WhisperFeatureExtractor, 
+    BitsAndBytesConfig, 
+    WhisperTokenizer, 
+    WhisperProcessor, 
+    WhisperForConditionalGeneration, 
+    EarlyStoppingCallback,
+    TrainerCallback, 
+    TrainingArguments, 
+    TrainerState, 
+    TrainerControl,
+    )
 from audio_converter import AudioConverter
 from utils import SprintDataset, DataCollatorSpeechSeq2SeqWithPadding, normalizeUnicode, normalizeUnicodextra, get_latest_checkpoint
 from peft import (
@@ -26,6 +37,7 @@ from peft import (
     get_peft_model,
     PeftConfig
 )
+from torchmetrics.text import WordErrorRate, CharErrorRate
 from tqdm import tqdm
 tqdm.pandas()
 
@@ -36,19 +48,19 @@ class CONFIG:
     debug=False
     do_aug = False
     do_train = True
-    run_checkpoint=True
+    run_checkpoint=False
     wandb_log = True
     do_noise = False
-    patience = 25
+    patience = 5
     device = 'cuda'
-    base_model = 'openai/whisper-large-v2' #'tugstugi' #"openai/whisper-tiny"
-    output_dir = 'Train/NoiseDataIntroducedTraining'
+    base_model = 'tugstugi' #"openai/whisper-tiny"
+    output_dir = 'Train/TugsTugiWithLora-v0.1'
     checkpoint_model = os.path.join(output_dir, get_latest_checkpoint(output_dir)) if run_checkpoint else None
     train_csv= 'clean_data.csv' #'ben10/ben10/train.csv'
     sample_rate=16000
     noisefiles = glob('audio/audio/*.wav') + glob('audio/audio/*/*.wav')
-    per_device_train_batch_size=8
-    per_device_eval_batch_size=8
+    per_device_train_batch_size=14
+    per_device_eval_batch_size=14
     gradient_accumulation_steps=1
     learning_rate=1e-5
     warmup_steps=500
@@ -118,7 +130,7 @@ except:
 
 # Creating dataset objects for train and val.
 train_ac = AudioConverter(sampleRate=CONFIG.sample_rate, 
-                          disableAug=False,
+                          disableAug=CONFIG.do_aug,
                           noiseFileList=noise_file_paths if CONFIG.do_noise else None,
                           )
 valid_ac = AudioConverter(sampleRate=CONFIG.sample_rate, 
@@ -139,25 +151,49 @@ valid_dataset = SprintDataset(valid_df,
 
 data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor)
 
-wer_metric = evaluate.load("wer")
-cer_metric = evaluate.load("cer")
+# wer_metric = evaluate.load("wer")
+# cer_metric = evaluate.load("cer")
 
-def compute_metrics_whisper(pred):
+# def compute_metrics_whisper(pred):
+#     pred_ids = pred.predictions
+#     label_ids = pred.label_ids
+
+#     # replace -100 with the pad_token_id
+#     label_ids[label_ids == -100] = tokenizer.pad_token_id
+
+#     # we do not want to group tokens when computing the metrics
+#     pred_str = tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
+#     # print(f'This is prediction: {pred_str}')
+#     label_str = tokenizer.batch_decode(label_ids, skip_special_tokens=True)
+
+#     wer = wer_metric.compute(predictions=pred_str, references=label_str)
+#     cer = cer_metric.compute(predictions=pred_str, references=label_str)
+#     print(f"At this evaluation, WER is: {wer} and CER is: {cer}")
+#     return {"wer": wer, "cer": cer}
+
+cer = CharErrorRate()
+wer = WordErrorRate()
+
+def compute_metrics(pred):
     pred_ids = pred.predictions
     label_ids = pred.label_ids
 
-    # replace -100 with the pad_token_id
     label_ids[label_ids == -100] = tokenizer.pad_token_id
 
-    # we do not want to group tokens when computing the metrics
     pred_str = tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
-    # print(f'This is prediction: {pred_str}')
     label_str = tokenizer.batch_decode(label_ids, skip_special_tokens=True)
 
-    wer = wer_metric.compute(predictions=pred_str, references=label_str)
-    cer = cer_metric.compute(predictions=pred_str, references=label_str)
-    print(f"At this evaluation, WER is: {wer} and CER is: {cer}")
-    return {"wer": wer, "cer": cer}
+    wer_res = wer(pred_str, label_str)
+    cer_res = cer(pred_str, label_str)
+    
+    """
+        uncomment the next 3 lines if you want to see how the examples look like during eval 
+    """
+    print("WER:",wer_res,"| CER:", cer_res)
+    # print("Pred:",pred_str[0])
+    # print("Label:",label_str[0])
+    
+    return {"wer": wer_res, "cer": cer_res}
 
 if CONFIG.do_train:    
     quant_config = BitsAndBytesConfig(
@@ -170,25 +206,25 @@ if CONFIG.do_train:
     if not CONFIG.run_checkpoint:
         model = WhisperForConditionalGeneration.from_pretrained(CONFIG.base_model, quantization_config=quant_config, device_map="auto")
     else:
+        print('='*99 + '\n')
+        print(f'The Training is Running from a checkpoint at: {CONFIG.checkpoint_model}')
+        print('\n' + '='*99)
         model = WhisperForConditionalGeneration.from_pretrained(CONFIG.checkpoint_model, quantization_config=quant_config,local_files_only=True, device_map="auto")
     
     model = prepare_model_for_kbit_training(model)
-    model.generation_config.language = "bn" 
-    model.generation_config.forced_decoder_ids = None
-    model.config.suppress_tokens = []
-
+    
     """
         whisper uses CNNs in the encoder
         LoRA freezes all layers, but let's make the first layer (receiving layer) trainable.
     """
     def make_inputs_require_grad(module, input, output):
         output.requires_grad_(True)
-
+    
     model.model.encoder.conv1.register_forward_hook(make_inputs_require_grad)
+
     lora_config = LoraConfig(r=32, lora_alpha=64, target_modules=["q_proj", "v_proj"], lora_dropout=0.05, bias="none", )
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
-    from transformers import Seq2SeqTrainer
 
     training_args = Seq2SeqTrainingArguments(
         output_dir=CONFIG.output_dir,  # change to a repo name of your choice
@@ -206,6 +242,7 @@ if CONFIG.do_train:
         save_steps=CONFIG.save_steps,
         eval_steps=CONFIG.eval_steps,
         logging_steps=CONFIG.log_steps,
+        greater_is_better=False,
         num_train_epochs=CONFIG.num_train_epochs,
         load_best_model_at_end=True,
         metric_for_best_model="wer",
@@ -214,14 +251,19 @@ if CONFIG.do_train:
         optim = "paged_adamw_8bit",
         remove_unused_columns=False,
     )
+    
+    model.generation_config.language = "bn" 
+    model.generation_config.forced_decoder_ids = None
+    model.config.suppress_tokens = []
 
+    from transformers import Seq2SeqTrainer
     trainer = Seq2SeqTrainer(
         args=training_args,
         model=model,
         train_dataset=train_dataset,
         eval_dataset=valid_dataset,
         data_collator=data_collator,
-        compute_metrics=compute_metrics_whisper,
+        compute_metrics=compute_metrics,
         tokenizer=processor.feature_extractor,
         callbacks = [EarlyStoppingCallback(early_stopping_patience=CONFIG.patience)],
         
@@ -241,5 +283,5 @@ if CONFIG.do_train:
     model.save_pretrained(CONFIG.output_dir)
     tokenizer.save_pretrained(CONFIG.output_dir)
     out_logs = pd.DataFrame(trainer.state.log_history)
-    out_logs.to_csv("logs.csv")
+    out_logs.to_csv("logs.csv", index = False)
     # trainer.save_pretrained(CONFIG.output_dir)
