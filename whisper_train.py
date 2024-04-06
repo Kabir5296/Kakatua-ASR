@@ -48,8 +48,8 @@ class CONFIG:
     debug=False
     do_aug = False
     do_train = True
-    run_checkpoint=False
-    wandb_log = True
+    run_checkpoint=True
+    wandb_log = True if not debug else False
     do_noise = False
     patience = 5
     device = 'cuda'
@@ -62,13 +62,13 @@ class CONFIG:
     per_device_train_batch_size=14
     per_device_eval_batch_size=14
     gradient_accumulation_steps=1
-    learning_rate=1e-5
+    learning_rate=1e-6
     warmup_steps=500
-    save_steps=1 if debug else 1000
-    eval_steps=1 if debug else 250
+    save_steps= 250
+    eval_steps=10 if debug else 250
     log_steps=1 if debug else 100
     save_limit = 4
-    num_train_epochs=50
+    num_train_epochs=50 if not debug else 1
     loop_train_dataset = 1
     loop_val_datset = 1
     # test_size = 0.1
@@ -251,8 +251,12 @@ if CONFIG.do_train:
         optim = "paged_adamw_8bit",
         remove_unused_columns=False,
     )
-    
-    model.generation_config.language = "bn" 
+
+    model.generation_config.language = "bn"
+    model.generation_config.task = "transcribe"
+    model.generation_config.lang_to_id = {"<|bn|>": 50302}
+    model.generation_config.task_to_id = {"transcribe": 50359}
+
     model.generation_config.forced_decoder_ids = None
     model.config.suppress_tokens = []
 
