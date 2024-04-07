@@ -48,13 +48,13 @@ class CONFIG:
     debug=False
     do_aug = False
     do_train = True
-    run_checkpoint=True
+    run_checkpoint=False
     wandb_log = True if not debug else False
     do_noise = False
     patience = 5
     device = 'cuda'
     base_model = 'tugstugi' #"openai/whisper-tiny"
-    output_dir = 'Train/TugsTugiWithLora-v0.1'
+    output_dir = 'Train/TugsTugiWithLora-v0.2'
     checkpoint_model = os.path.join(output_dir, get_latest_checkpoint(output_dir)) if run_checkpoint else None
     train_csv= 'clean_data.csv' #'ben10/ben10/train.csv'
     sample_rate=16000
@@ -62,11 +62,11 @@ class CONFIG:
     per_device_train_batch_size=14
     per_device_eval_batch_size=14
     gradient_accumulation_steps=1
-    learning_rate=1e-6
+    learning_rate=5e-5
     warmup_steps=500
-    save_steps= 250
-    eval_steps=10 if debug else 250
-    log_steps=1 if debug else 100
+    save_steps= 500
+    eval_steps=10 if debug else 500
+    log_steps=1 if debug else 10
     save_limit = 4
     num_train_epochs=50 if not debug else 1
     loop_train_dataset = 1
@@ -74,6 +74,7 @@ class CONFIG:
     # test_size = 0.1
     valid_size = 0.2
     seed = 42
+    stratify = 'district'
 
 import wandb
 if not CONFIG.wandb_log:
@@ -102,6 +103,7 @@ print('\n'+'='*70)
 train_df, valid_df = train_test_split(new_df, 
                                      test_size=CONFIG.valid_size,
                                      random_state=CONFIG.seed,
+                                     stratify=new_df['district']
                                      ) 
 train_df = train_df.reset_index(drop=True)
 valid_df = valid_df.reset_index(drop=True)
@@ -151,26 +153,6 @@ valid_dataset = SprintDataset(valid_df,
 
 data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor)
 
-# wer_metric = evaluate.load("wer")
-# cer_metric = evaluate.load("cer")
-
-# def compute_metrics_whisper(pred):
-#     pred_ids = pred.predictions
-#     label_ids = pred.label_ids
-
-#     # replace -100 with the pad_token_id
-#     label_ids[label_ids == -100] = tokenizer.pad_token_id
-
-#     # we do not want to group tokens when computing the metrics
-#     pred_str = tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
-#     # print(f'This is prediction: {pred_str}')
-#     label_str = tokenizer.batch_decode(label_ids, skip_special_tokens=True)
-
-#     wer = wer_metric.compute(predictions=pred_str, references=label_str)
-#     cer = cer_metric.compute(predictions=pred_str, references=label_str)
-#     print(f"At this evaluation, WER is: {wer} and CER is: {cer}")
-#     return {"wer": wer, "cer": cer}
-
 cer = CharErrorRate()
 wer = WordErrorRate()
 
@@ -190,8 +172,6 @@ def compute_metrics(pred):
         uncomment the next 3 lines if you want to see how the examples look like during eval 
     """
     print("WER:",wer_res,"| CER:", cer_res)
-    # print("Pred:",pred_str[0])
-    # print("Label:",label_str[0])
     
     return {"wer": wer_res, "cer": cer_res}
 

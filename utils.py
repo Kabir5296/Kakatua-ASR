@@ -63,7 +63,7 @@ class SprintDataset(Dataset):
         input_values = torch.cat(waves, axis = 0) #[0]
 
         input_length = len(input_values)
-        labels = self.processor.tokenizer(normalizer.unicode_normalize(sentence), max_length=448).input_ids
+        labels = self.processor.tokenizer(normalizer.normalize_bn([sentence], punct_replacement_token='')[0].replace('<>', ''), max_length=448).input_ids
         return {
             'input_features':input_values,
             'input_length':input_length,
